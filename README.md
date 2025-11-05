@@ -3,8 +3,6 @@
 > Terraform + GitHub Actions pipeline for automated, security-scanned AWS deployments
 
 ## Problem
-AWS infrastructure is often deployed without security checks, leading to misconfigurations like public S3 buckets, overly permissive security groups, and unencrypted resources.
-
 AWS infrastructure is ofer deployed in a unsecure way, leading to misconfigurations like public S3 buckets, overly permissive security groups, and unencrypted resources. Which is the start of diasaster. 
 
 ## Solution
