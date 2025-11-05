@@ -32,3 +32,7 @@ Automated CI/CD pipeline that scans Terraform code for security issues BEFORE de
 ---
 *Building this as part of my journey to become a Cloud + AI Engineer*
 
+secure-infra-pipeline/
+├── terraform/          # Infrastructure code
+├── .github/workflows/  # CI/CD pipelines
+└── docs/              # Documentation
