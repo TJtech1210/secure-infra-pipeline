@@ -1,20 +1,16 @@
 import sys
 import logging
+from datetime import datetime, timezone, timedelta
 
+# -----------------------------
+# Logging Setup
+# -----------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s"
 )
 
 USE_MOCK = True
-
-# -----------------------------
-# AWS Clients (Real Later)
-# -----------------------------
-if not USE_MOCK:
-    import boto3
-    iam = boto3.client("iam")
-    ec2 = boto3.client("ec2")
 
 # -----------------------------
 # Mock IAM Data
@@ -24,10 +20,17 @@ if USE_MOCK:
         {
             "UserName": "test-admin",
             "HasAdminAccess": True,
-            "HasMFA": True
+            "HasMFA": True,
+            "AccessKeys": [
+                {
+                    "LastRotated": datetime.now(timezone.utc) - timedelta(days=120)
+                }
+            ]
         }
     ]
 else:
+    import boto3
+    iam = boto3.client("iam")
     iam_users = iam.list_users().get("Users", [])
 
 # -----------------------------
@@ -43,23 +46,42 @@ if USE_MOCK:
                     "FromPort": 22,
                     "ToPort": 22,
                     "IpProtocol": "tcp",
-                    "IpRanges": [{"CidrIp": "10.0.0.0/16"
-}]
+                    "IpRanges": [{"CidrIp": "10.0.0.0/32"}]
                 }
             ]
         }
     ]
 else:
+    ec2 = boto3.client("ec2")
     security_groups = ec2.describe_security_groups().get("SecurityGroups", [])
 
 # -----------------------------
-# Findings Engine
+# Findings Engine  ✅ MUST BE HERE
 # -----------------------------
 findings = []
 high_risk_exists = False
 
 # -----------------------------
-# IAM Checks
+# IAM Access Key Rotation Check
+# -----------------------------
+ROTATION_THRESHOLD_DAYS = 90
+rotation_threshold = timedelta(days=ROTATION_THRESHOLD_DAYS)
+now = datetime.now(timezone.utc)
+
+for user in iam_users:
+    for key in user.get("AccessKeys", []):
+        last_rotated = key.get("LastRotated")
+
+        if last_rotated and (now - last_rotated) > rotation_threshold:
+            findings.append({
+                "resource": f"iam_user:{user['UserName']}",
+                "issue": f"Access key not rotated in over {ROTATION_THRESHOLD_DAYS} days",
+                "severity": "HIGH",
+                "recommendation": "Rotate or remove unused access keys"
+            })
+
+# -----------------------------
+# IAM MFA Check
 # -----------------------------
 for user in iam_users:
     if user.get("HasAdminAccess") and not user.get("HasMFA"):
@@ -76,7 +98,6 @@ for user in iam_users:
 for sg in security_groups:
     for rule in sg.get("IpPermissions", []):
         from_port = rule.get("FromPort")
-        to_port = rule.get("ToPort")
 
         for ip_range in rule.get("IpRanges", []):
             cidr = ip_range.get("CidrIp")
