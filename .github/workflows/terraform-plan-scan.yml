@@ -1,0 +1,133 @@
+name: Terraform Plan Scan Template
+
+on:
+  # Manual trigger only for now so this template is safe in incomplete repos.
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment folder under terraform/environments/"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - stage
+          - prod
+      run_tfsec:
+        description: "Run optional tfsec scan"
+        required: false
+        default: false
+        type: boolean
+      run_apply:
+        description: "Run terraform apply after all gates pass"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-plan-scan:
+    runs-on: ubuntu-latest
+    env:
+      # Keep terraform code in terraform/ as the repo root for IaC.
+      TF_WORKING_DIR: terraform
+      # The binary plan output written by `terraform plan -out`.
+      TF_PLAN_OUT: plan.out
+      # The JSON plan used by CloudSentry and other policy scanners.
+      TF_PLAN_JSON: tfplan.json
+      # Placeholder severity gate. Tune as your policy evolves.
+      CLOUDSENTRY_FAIL_ON: HIGH
+
+    steps:
+      # 1) Checkout repository contents.
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2) Detect whether Terraform files exist yet.
+      #    This keeps the template from failing in an incomplete repo.
+      - name: Detect Terraform files
+        id: detect_tf
+        shell: bash
+        run: |
+          if find "${TF_WORKING_DIR}" -type f -name "*.tf" | grep -q .; then
+            echo "has_tf=true" >> "$GITHUB_OUTPUT"
+            echo "Terraform files found. Running full template steps."
+          else
+            echo "has_tf=false" >> "$GITHUB_OUTPUT"
+            echo "No .tf files found under ${TF_WORKING_DIR}; skipping plan/scan/apply template steps."
+          fi
+
+      # 3) Install Terraform CLI.
+      - name: Setup Terraform
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        uses: hashicorp/setup-terraform@v3
+
+      # 4) Initialize Terraform in terraform/.
+      - name: Terraform init
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform init
+
+      # 5) Validate Terraform configuration.
+      - name: Terraform validate
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform validate
+
+      # 6) Create binary plan output in terraform/plan.out.
+      #    For multi-env setups, point -var-file at terraform/environments/<env>/ files.
+      - name: Terraform plan
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          terraform plan -out="${TF_PLAN_OUT}"
+          # TODO: Example for env-specific variables:
+          # terraform plan -var-file="environments/${{ github.event.inputs.environment }}/terraform.tfvars" -out="${TF_PLAN_OUT}"
+
+      # 7) Export plan JSON to terraform/tfplan.json.
+      #    CloudSentry scans this file to gate risky changes before apply.
+      - name: Terraform show JSON
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform show -json "${TF_PLAN_OUT}" > "${TF_PLAN_JSON}"
+
+      # 8) CloudSentry scan gate.
+      #    Placeholder install method: pip. Replace with your preferred source/version.
+      - name: Install CloudSentry CLI (template)
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        run: |
+          python -m pip install --upgrade pip
+          # TODO: Replace with your preferred source, for example:
+          # pip install cloudsentry-cli
+          # pip install git+https://github.com/TJtech1210/cloudsentry.git
+          pip install cloudsentry-cli || echo "TODO: configure CloudSentry install source"
+
+      - name: Run CloudSentry scan (template gate)
+        if: steps.detect_tf.outputs.has_tf == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          # CloudSentry should fail the job when findings >= CLOUDSENTRY_FAIL_ON.
+          cloudsentry-cli scan \
+            --input "${TF_PLAN_JSON}" \
+            --fail-on "${CLOUDSENTRY_FAIL_ON}" \
+            --output cloudsentry-report.json
+
+      # 9) Optional second-opinion scan.
+      - name: Optional tfsec scan
+        if: steps.detect_tf.outputs.has_tf == 'true' && github.event.inputs.run_tfsec == 'true'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          # TODO: install tfsec in your preferred way if not preinstalled on the runner.
+          tfsec .
+
+      # 10) Optional apply, gated by:
+      #     - main branch
+      #     - manual run input
+      #     - successful plan + scanners above
+      #     This ensures CloudSentry findings can block apply.
+      - name: Terraform apply (gated)
+        if: steps.detect_tf.outputs.has_tf == 'true' && github.event.inputs.run_apply == 'true' && github.ref == 'refs/heads/main'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: terraform apply -auto-approve "${TF_PLAN_OUT}"
